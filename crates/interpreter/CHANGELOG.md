@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.0](https://github.com/bluealloy/revm/compare/revm-interpreter-v5.0.0...revm-interpreter-v6.0.0) - 2024-05-15
+
+### Added
+- add Opcode::modifies_memory back ([#1421](https://github.com/bluealloy/revm/pull/1421))
+- *(EOF)* Add CALLF/JUMPF stack checks ([#1417](https://github.com/bluealloy/revm/pull/1417))
+- *(EOF)* remove TXCREATE ([#1415](https://github.com/bluealloy/revm/pull/1415))
+
+### Other
+- *(EOF)* rename extcall opcode/names ([#1416](https://github.com/bluealloy/revm/pull/1416))
+- point to gas! in Gas::record_cost ([#1413](https://github.com/bluealloy/revm/pull/1413))
+- pop_address should use crate scope ([#1410](https://github.com/bluealloy/revm/pull/1410))
+- Remove Host constrain from calc_call_gas ([#1409](https://github.com/bluealloy/revm/pull/1409))
+
 ## [5.0.0](https://github.com/bluealloy/revm/compare/revm-interpreter-v4.0.0...revm-interpreter-v5.0.0) - 2024-05-12
 
 ### Added
