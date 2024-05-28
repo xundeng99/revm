@@ -17,6 +17,8 @@ use crate::{
 use core::cmp::min;
 use revm_primitives::{Bytecode, Eof, U256};
 use std::borrow::ToOwned;
+use regex::bytes::Regex;
+use std::collections::HashMap;
 
 /// EVM bytecode interpreter.
 #[derive(Debug)]
@@ -78,6 +80,128 @@ pub struct InterpreterResult {
     pub output: Bytes,
     /// The gas usage information.
     pub gas: Gas,
+}
+
+
+/*  Solidity Error Code
+enum class PanicCode
+{
+	Generic = 0x00, // generic / unspecified error
+	Assert = 0x01, // used by the assert() builtin
+	UnderOverflow = 0x11, // arithmetic underflow or overflow
+	DivisionByZero = 0x12, // division or modulo by zero
+	EnumConversionError = 0x21, // enum conversion error
+	StorageEncodingError = 0x22, // invalid encoding in storage
+	EmptyArrayPop = 0x31, // empty array pop
+	ArrayOutOfBounds = 0x32, // array out of bounds access
+	ResourceError = 0x41, // resource error (too large allocation or too large array)
+	InvalidInternalFunction = 0x51, // calling invalid internal function
+};
+
+*/
+
+fn find_panic_code(data: &[u8], map : &mut HashMap<usize, usize>){
+    // ------- work ---------------
+    // 0x41 can be substituted by other error codes
+    // Push1 0x41 Push1 0x4 MSTORE PUSH1 0x24 Push1 0x0 Revert
+    // 604160045260246000fd
+    // ------- work ---------------
+
+    // JUMPDEST PUSH32 (error message)
+    // Push1 0x0 
+    // MSTORE 
+    // Push1 0x41 
+    // Push1 0x4 
+    // MSTORE 
+    // PUSH1 0x24 
+    // Push1 0x0 
+    // Revert
+    // 600052604160045260246000fd
+
+    let mut indices: Vec<usize> = Vec::new();
+
+    let bypass_panic = vec![0x11, 0x12, 0x32, 0x41];
+
+    for (index, byte) in data.iter().enumerate() {
+        if *byte == 0xfd && index > 46 {
+            match  data[(index-12)..=index] {
+                [0x60, 0x00, 0x52, 0x60, panc, 0x60, 0x04, 0x52, 0x60, 0x24, 0x60, 0x00, 0xfd] => {
+                    //println!("pattern found!{}", index + 1);
+                    if bypass_panic.contains(&panc){
+                        let mut found = false;  
+                        let mut iter = index - 9;
+                        while (!found && iter > 0) {
+                            // JUMPDEST
+                            if(data[iter] == 0x5b){
+                                found = true;
+                                //println!("At idx {} found {}!\n", iter, index);
+                                map.insert(iter, index);
+                            }
+                            //JUMPI or JUMP
+                            else if(data[iter] == 0x57 || data[iter] == 0x56){
+                                //println!("quit early: {} {}", index, iter);
+                                map.insert(iter + 1, index);
+                                found = true;
+                            }
+                            else{
+                                iter = iter - 1;
+                            }
+            
+                        }                 
+                        
+                    }else{}
+                },
+                _ => {},
+            } 
+        }
+    }
+    
+}
+
+// TODO: FIX 
+fn find_pattern_indices(data: &[u8], map : &mut HashMap<usize, usize>){
+    // -------This did not work ---------------
+    // Pattern1   Pattern2
+    // JUMPI       JUMPDEST
+    // ...
+    // Revert      Revert
+
+    // -------This did not work ---------------
+    // the fd detected is actually part of push
+    // for example:
+    // PUSH32 .... fd
+    // Need more complex pattern
+    let mut indices: Vec<usize> = Vec::new();
+
+    for (index, byte) in data.iter().enumerate() {
+        if *byte == 0xfd{
+            //println!("At idx {} found fd!\n", index);
+            let mut found = false;
+            let mut iter = index - 1;
+            //println!("At idx {} found !0xfd\n", index);
+            while (!found && iter > 0) {
+                // JUMPDEST
+                if(data[iter] == 0x5b){
+                    found = true;
+                    println!("case 1 Insert {} for revert at {}!\n", iter, index);
+                    map.insert(iter, index);
+                
+                //jumpi and jump
+                }
+                else if(data[iter] == 0x57 || data[iter] == 0x56){
+                    println!("case 2 Insert {} for revert at {}!\n", iter, index);
+                    map.insert(iter + 1, index);
+                    found = true;
+                }
+                else{
+                    iter = iter - 1;
+                }
+
+            }
+        }
+        else {}  
+    }
+    
 }
 
 impl Interpreter {
@@ -343,6 +467,30 @@ impl Interpreter {
         (instruction_table[opcode as usize])(self, host)
     }
 
+    #[inline]
+    pub(crate) fn step_skip<FN, H: Host + ?Sized>(&mut self, instruction_table: &[FN; 256], host: &mut H, skip_map: &HashMap<usize, usize>)
+    where
+        FN: Fn(&mut Interpreter, &mut H),
+    {
+        if skip_map.contains_key(&self.program_counter()){
+            let value = skip_map.get(&self.program_counter());
+            println!("Revert Ahead at pc{}, {}!", self.program_counter(), unsafe {*self.instruction_pointer});
+            (instruction_table[0xfd as usize])(self, host)
+        }            
+        else{
+            // Get current opcode.
+            let opcode = unsafe { *self.instruction_pointer };
+
+            // SAFETY: In analysis we are doing padding of bytecode so that we are sure that last
+            // byte instruction is STOP so we are safe to just increment program_counter bcs on last instruction
+            // it will do noop and just stop execution of this contract
+            self.instruction_pointer = unsafe { self.instruction_pointer.offset(1) };
+
+            // execute instruction.
+            (instruction_table[opcode as usize])(self, host)
+        }
+    }
+
     /// Take memory and replace it with empty memory.
     pub fn take_memory(&mut self) -> SharedMemory {
         core::mem::replace(&mut self.shared_memory, EMPTY_SHARED_MEMORY)
@@ -360,9 +508,22 @@ impl Interpreter {
     {
         self.next_action = InterpreterAction::None;
         self.shared_memory = shared_memory;
+
+        // Find bbs with revert as last instruction
+        let bytecode_analysis = self.contract.bytecode.original_byte_slice().clone();
+        let mut skip_map: HashMap<usize, usize> = HashMap::new();
+        find_panic_code(bytecode_analysis, &mut skip_map);
+        // find_pattern_indices(bytecode_analysis, &mut skip_map);
+
+        // println!{"first bytecode"}
+        // for el in bytecode_analysis {
+        //      println!("{:02x}", el);
+        // }
+
         // main loop
         while self.instruction_result == InstructionResult::Continue {
-            self.step(instruction_table, host);
+            self.step(instruction_table, host)
+            //self.step_skip(instruction_table, host, &skip_map);
         }
 
         // Return next action if it is some.
@@ -407,6 +568,7 @@ impl InterpreterResult {
         self.result.is_error()
     }
 }
+
 
 /// Resize the memory to the new size. Returns whether the gas was enough to resize the memory.
 #[inline(never)]

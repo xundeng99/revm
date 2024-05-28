@@ -1,6 +1,6 @@
 // Example Adapted From: https://github.com/bluealloy/revm/issues/672
 
-use ethers_core::types::BlockId;
+use ethers_core::types::{BlockId, H256};
 use ethers_providers::Middleware;
 use ethers_providers::{Http, Provider};
 use indicatif::ProgressBar;
@@ -52,13 +52,13 @@ impl Write for FlushWriter {
 async fn main() -> anyhow::Result<()> {
     // Create ethers client and wrap it in Arc<M>
     let client = Provider::<Http>::try_from(
-        "https://mainnet.infura.io/v3/c60b0bb42f8a4c6481ecd229eddaca27",
+        "http://localhost:8545"
     )?;
     let client = Arc::new(client);
 
     // Params
     let chain_id: u64 = 1;
-    let block_number = 10889447;
+    let block_number = 13125071;
 
     // Fetch the transaction-rich block
     let block = match client.get_block_with_txs(block_number).await {
@@ -108,6 +108,18 @@ async fn main() -> anyhow::Result<()> {
 
     // Fill in CfgEnv
     for tx in block.transactions {
+        // test case 1:
+        // if (tx.hash != "0xa9a1b8ea288eb9ad315088f17f7c7386b9989c95b4d13c81b69d5ddad7ffe61e".parse::<H256>().unwrap()){
+        //     continue;
+        // }
+        // println!("Found it");
+
+        // cannot replicate? 
+        if (tx.hash != "0x45b32f898f69e5c1ff48e1da7565f767ff54c36b406490705b5d4e3e041201c1".parse::<H256>().unwrap()){
+            continue;
+        }
+        println!("Found it");
+        
         evm = evm
             .modify()
             .modify_tx_env(|etx| {
@@ -174,6 +186,7 @@ async fn main() -> anyhow::Result<()> {
         inner.lock().unwrap().flush().expect("Failed to flush file");
 
         console_bar.inc(1);
+        //break;
     }
 
     console_bar.finish_with_message("Finished all transactions.");
