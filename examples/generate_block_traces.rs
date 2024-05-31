@@ -58,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Params
     let chain_id: u64 = 1;
-    let block_number = 13125071;
+    let block_number = 19930412;
 
     // Fetch the transaction-rich block
     let block = match client.get_block_with_txs(block_number).await {
@@ -108,17 +108,18 @@ async fn main() -> anyhow::Result<()> {
 
     // Fill in CfgEnv
     for tx in block.transactions {
-        // test case 1:
+        //test case 1:
         // if (tx.hash != "0xa9a1b8ea288eb9ad315088f17f7c7386b9989c95b4d13c81b69d5ddad7ffe61e".parse::<H256>().unwrap()){
+        //    continue;
+        // }
+        // //println!("Found it");
+
+        // cannot replicate? 
+        // if (tx.hash != "0x45b32f898f69e5c1ff48e1da7565f767ff54c36b406490705b5d4e3e041201c1".parse::<H256>().unwrap()){
         //     continue;
         // }
         // println!("Found it");
-
-        // cannot replicate? 
-        if (tx.hash != "0x45b32f898f69e5c1ff48e1da7565f767ff54c36b406490705b5d4e3e041201c1".parse::<H256>().unwrap()){
-            continue;
-        }
-        println!("Found it");
+        println!("{}", tx.hash);
         
         evm = evm
             .modify()
@@ -186,7 +187,7 @@ async fn main() -> anyhow::Result<()> {
         inner.lock().unwrap().flush().expect("Failed to flush file");
 
         console_bar.inc(1);
-        //break;
+
     }
 
     console_bar.finish_with_message("Finished all transactions.");
