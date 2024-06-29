@@ -6,7 +6,7 @@ use ethers_providers::{Http, Provider};
 use indicatif::ProgressBar;
 use revm::db::{CacheDB, EthersDB, StateBuilder};
 use revm::inspectors::TracerEip3155;
-use revm::primitives::{Address, TransactTo, U256};
+use revm::primitives::{Address, TransactTo, U256, ExecutionResult, Output, Bytes};
 use revm::{inspector_handle_register, Evm};
 use std::fs::OpenOptions;
 use std::io::BufWriter;
@@ -28,25 +28,7 @@ macro_rules! local_fill {
     };
 }
 
-struct FlushWriter {
-    writer: Arc<Mutex<BufWriter<std::fs::File>>>,
-}
-
-impl FlushWriter {
-    fn new(writer: Arc<Mutex<BufWriter<std::fs::File>>>) -> Self {
-        Self { writer }
-    }
-}
-
-impl Write for FlushWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.writer.lock().unwrap().write(buf)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.writer.lock().unwrap().flush()
-    }
-}
+// cargo run -p revm --release --features std,ethersdb,serde-json --example test &> log
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -79,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
     println!("timestamp:{}", block.timestamp);
     let mut evm = Evm::builder()
         .with_db(&mut state)
-        .with_external_context(TracerEip3155::new(Box::new(std::io::stdout())))
+        //.with_external_context(TracerEip3155::new(Box::new(std::io::stdout())))
         .modify_block_env(|b| {
             if let Some(number) = block.number {
                 let nn = number.0[0];
@@ -96,44 +78,16 @@ async fn main() -> anyhow::Result<()> {
         .modify_cfg_env(|c| {
             c.chain_id = chain_id;
         })
-        .append_handler_register(inspector_handle_register)
+        //.append_handler_register(inspector_handle_register)
         .build();
 
     let txs = block.transactions.len();
     println!("Found {txs} transactions.");
 
-    let console_bar = Arc::new(ProgressBar::new(txs as u64));
-    let start = Instant::now();
-
     // Create the traces directory if it doesn't exist
     std::fs::create_dir_all("traces").expect("Failed to create traces directory");
 
-    // Fill in CfgEnv
     for tx in block.transactions {
-        //test case 1:
-        // if (tx.hash != "0xa9a1b8ea288eb9ad315088f17f7c7386b9989c95b4d13c81b69d5ddad7ffe61e".parse::<H256>().unwrap()){
-        //    continue;
-        // }
-        // //println!("Found it");
-
-        // cannot replicate? 
-        // if (tx.hash != "0x45b32f898f69e5c1ff48e1da7565f767ff54c36b406490705b5d4e3e041201c1".parse::<H256>().unwrap()){
-        //     continue;
-        // }
-        // println!("Found it");
-
-        // if (tx.hash != "0xd099a41830b964e93415e9a8607cd92567e40d3eeb491d52f3b66eee6b0357eb".parse::<H256>().unwrap()){
-        //      continue;
-        // }
-        // if (tx.hash != "0x8b90182c2140db82fc5b4c683b11b9b5dc936258b8996d3aae58e1a33ecb52fe".parse::<H256>().unwrap()){
-        //      continue;
-        // }
-        // if (tx.hash != "0xb3f067618ce54bc26a960b660cfc28f9ea0315e2e9a1a855ede1508eb4017376".parse::<H256>().unwrap()){
-        //          continue;
-        //     }
-        // if (tx.hash != "0x4ff4028b03c3df468197358b99f5160e5709e7fce3884cc8ce818856d058e106".parse::<H256>().unwrap()){
-        //               continue;
-        //         }
         if (tx.hash != "0x995e880635f4a7462a420a58527023f946710167ea4c6c093d7d193062a33b01".parse::<H256>().unwrap()){
             continue;
         }
@@ -195,39 +149,31 @@ async fn main() -> anyhow::Result<()> {
             })
             .build();
 
-        // Construct the file writer to write the trace to
-        let tx_number = tx.transaction_index.unwrap().0[0];
-        let file_name = format!("traces/{}.json", tx_number);
-        let write = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(file_name);
-        let inner = Arc::new(Mutex::new(BufWriter::new(
-            write.expect("Failed to open file"),
-        )));
-        let writer = FlushWriter::new(Arc::clone(&inner));
-
-        // Inspect and commit the transaction to the EVM
-        evm.context.external.set_writer(Box::new(writer));
-        if let Err(error) = evm.transact_commit() {
-            println!("Got error: {:?}", error);
+        let start = Instant::now();
+        let mut count = 0;
+        while count < 1000 {
+            let ref_tx = evm.transact().unwrap();
+        // select ExecutionResult struct
+            let result = ref_tx.result;
+            evm = evm.modify()
+            .modify_tx_env(|etx| {
+                etx.data = Bytes::from(Vec::from(format!("{:064x}", count)));}).build();
+            // unpack output call enum into raw bytes
+            let value = if let ExecutionResult::Success { output: Output::Call(value), .. } = result {
+                Some(value)
+            } else {
+                println!("Execution failed");
+                None
+            };
+            count = count +1;
         }
 
-        // Flush the file writer
-        inner.lock().unwrap().flush().expect("Failed to flush file");
-
-        console_bar.inc(1);
-
+        let elapsed = start.elapsed();   
+        println!(
+            "Finished execution. Total CPU time: {:.6}s",
+            elapsed.as_secs_f64()
+        ); 
     }
-
-    console_bar.finish_with_message("Finished all transactions.");
-
-    let elapsed = start.elapsed();
-    println!(
-        "Finished execution. Total CPU time: {:.6}s",
-        elapsed.as_secs_f64()
-    );
 
     Ok(())
 }

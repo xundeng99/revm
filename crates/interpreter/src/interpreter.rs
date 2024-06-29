@@ -19,6 +19,7 @@ use core::hash::Hash;
 use revm_primitives::{Bytecode, Eof, U256};
 use std::borrow::ToOwned;
 use std::collections::HashMap;
+use std::time::Instant;
 
 
 /// EVM bytecode interpreter.
@@ -100,6 +101,51 @@ enum class PanicCode
 };
 
 */
+fn func_select_table_v1(bytes: &[u8], map : &mut HashMap<(usize, U256), usize>){
+    let mut i = 0;
+    while i < bytes.len() {
+        let op = *bytes.get(i).unwrap();
+        if (0x60..=0x7f).contains(&op) {
+            i += 1; 
+            i += op as usize - 0x5f;
+        }
+        else if op == 0x80 {
+            match  bytes[i..=i+10] {
+                [0x80, 0x63, v1, v2, v3, v4, 0x14, 0x61, d1, d2, 0x57] =>{
+                    let idx = i;
+                    let val:U256 = U256::from_be_bytes([ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+                        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+                        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+                        0x00, 0x00, 0x00, 0x00, v1, v2, v3, v4]);
+                    let dst:usize = usize::from_be_bytes([0, 0, 0, 0, 0, 0, d1,d2]);
+                    map.insert((idx, val), dst);
+                    i += 11;
+                    while (match bytes[i..=i+10] {
+                        [0x80, 0x63, v1, v2, v3, v4, 0x14, 0x61, d1, d2, 0x57] =>{
+                            let val1:U256 = U256::from_be_bytes([ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+                                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+                                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+                                0x00, 0x00, 0x00, 0x00, v1, v2, v3, v4]);
+                            let dst1:usize = usize::from_be_bytes([0, 0, 0, 0, 0, 0, d1,d2]);
+                            map.insert((idx, val1), dst1);
+                            i += 11;
+                            true
+                        }
+                        _ =>{false}                  
+                    }){}
+                }
+                _ =>{i += 1;}                  
+            }
+        }
+        else{
+            i += 1;
+        }
+    }
+       
+}
+
+
+
 fn func_select_table(bytes: &[u8], map : &mut HashMap<usize, HashMap<U256, usize>>){
     let mut i = 0;
     while i < bytes.len() {
@@ -519,6 +565,11 @@ impl Interpreter {
     where
         FN: Fn(&mut Interpreter, &mut H),
     {
+        let pc = &self.program_counter();
+        let mut val:U256 = U256::from(0);
+        if self.stack.len() > 0 {
+            val = self.stack.peek(0).unwrap();
+        }
         // Get current opcode.
         let opcode = unsafe { *self.instruction_pointer };
 
@@ -532,37 +583,61 @@ impl Interpreter {
     }
 
     #[inline]
-    pub(crate) fn step_skip<FN, H: Host + ?Sized>(&mut self, instruction_table: &[FN; 256], host: &mut H, skip_map: &HashMap<usize, usize>, fs_map: &HashMap<usize, HashMap<U256, usize>>)
+    pub(crate) fn step_skip<FN, H: Host + ?Sized>(&mut self, instruction_table: &[FN; 256], host: &mut H, skip_map: &HashMap<usize, usize>, fs_map: &HashMap<(usize, U256), usize>)
     where
         FN: Fn(&mut Interpreter, &mut H),
     {
+        let start = Instant::now();
         let pc = &self.program_counter();
+        let mut val:U256 = U256::from(0);
+        if self.stack.len() > 0 {
+            val = self.stack.peek(0).unwrap();
+        }else{
+            // Get current opcode.
+            let opcode = unsafe { *self.instruction_pointer };
+
+            // SAFETY: In analysis we are doing padding of bytecode so that we are sure that last
+            // byte instruction is STOP so we are safe to just increment program_counter bcs on last instruction
+            // it will do noop and just stop execution of this contract
+            self.instruction_pointer = unsafe { self.instruction_pointer.offset(1) };
+
+            // execute instruction.
+            (instruction_table[opcode as usize])(self, host)
+        }
         if skip_map.contains_key(pc){
             let value = skip_map.get(&self.program_counter());
             println!("Revert Ahead at pc{}, {}!", self.program_counter(), unsafe {*self.instruction_pointer});
-            (instruction_table[0xfd as usize])(self, host)
-        }else if (fs_map.contains_key(pc)){
-            // println!("Jump Ahead");
-            let innermap = fs_map.get(pc).unwrap();
-            let val:U256 = self.stack.peek(0).unwrap();
-            if innermap.contains_key(&val){
-                let dst = innermap.get(&val).unwrap();
-                self.instruction_pointer = unsafe { self.bytecode.as_ptr().add(*dst) };
-            }
-            // TODO: FIX Default branch 
-            else{
-                // Get current opcode.
-                let opcode = unsafe { *self.instruction_pointer };
+            (instruction_table[0xfd as usize])(self, host)}
+        
+        // }else if (fs_map.contains_key(pc)){
 
-                // SAFETY: In analysis we are doing padding of bytecode so that we are sure that last
-                // byte instruction is STOP so we are safe to just increment program_counter bcs on last instruction
-                // it will do noop and just stop execution of this contract
-                self.instruction_pointer = unsafe { self.instruction_pointer.offset(1) };
+        // v0 
+        // if fs_map.contains_key(pc) {
+        //     println!("Jump Ahead");
+        //     let innermap = fs_map.get(pc).unwrap();
+        //     let val:U256 = self.stack.peek(0).unwrap();
+        //     if innermap.contains_key(&val){
+        //         println!("Being Smart Branch");
+        //         let dst = innermap.get(&val).unwrap();
+        //         self.instruction_pointer = unsafe { self.bytecode.as_ptr().add(*dst) };
+        //     }
+        //     else{
+        //         println!("Default Branch");
+        //         // Get current opcode.
+        //         let opcode = unsafe { *self.instruction_pointer };
 
-                // execute instruction.
-                (instruction_table[opcode as usize])(self, host)
-            }
-        }           
+        //         // SAFETY: In analysis we are doing padding of bytecode so that we are sure that last
+        //         // byte instruction is STOP so we are safe to just increment program_counter bcs on last instruction
+        //         // it will do noop and just stop execution of this contract
+        //         self.instruction_pointer = unsafe { self.instruction_pointer.offset(1) };
+
+        //         // execute instruction.
+        //         (instruction_table[opcode as usize])(self, host)
+        //     }
+        // }
+        else if let Some(dst) = fs_map.get(&(*pc, val)){ 
+            self.instruction_pointer = unsafe { self.bytecode.as_ptr().add(*dst) };
+        }
         else{
             // Get current opcode.
             let opcode = unsafe { *self.instruction_pointer };
@@ -599,14 +674,21 @@ impl Interpreter {
         let bytecode_analysis = self.contract.bytecode.original_byte_slice().clone();
         let mut skip_map: HashMap<usize, usize> = HashMap::new();
         let mut push_map: HashMap<usize, usize> = HashMap::new();
-        let mut func_selector_map: HashMap<usize, HashMap<U256, usize>> = HashMap::new();
+        //let mut func_selector_map: HashMap<usize, HashMap<U256, usize>> = HashMap::new();
+        let mut func_selector_map: HashMap<(usize,U256), usize> = HashMap::new();
         
-        //find_panic_code(bytecode_analysis, &mut skip_map);
+        find_panic_code(bytecode_analysis, &mut skip_map);
 
         //build_push_map(&bytecode_analysis, &mut push_map);
         //find_pattern_indices(&bytecode_analysis, &mut skip_map);
-        func_select_table(&bytecode_analysis, &mut func_selector_map);
-
+        
+        // let start = Instant::now();
+        func_select_table_v1(&bytecode_analysis, &mut func_selector_map);
+        //let elapsed = start.elapsed();   
+        // println!(
+        //     "Finished execution. Total CPU time: {:.6}s",
+        //     elapsed.as_secs_f64()
+        // ); 
 
         // println!{"first bytecode"}
         // for el in bytecode_analysis {
