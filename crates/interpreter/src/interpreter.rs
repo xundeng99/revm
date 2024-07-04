@@ -101,7 +101,9 @@ enum class PanicCode
 };
 
 */
-fn func_select_table_v1(bytes: &[u8], map : &mut HashMap<(usize, U256), usize>){
+
+//Vector version 2
+fn func_select_table_v2(bytes: &[u8], pc_vec : &mut Vec<usize>, jump_map : &mut Vec<(usize, U256)>, jump_dst: &mut Vec<usize>){
     let mut i = 0;
     while i < bytes.len() {
         let op = *bytes.get(i).unwrap();
@@ -118,7 +120,10 @@ fn func_select_table_v1(bytes: &[u8], map : &mut HashMap<(usize, U256), usize>){
                         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
                         0x00, 0x00, 0x00, 0x00, v1, v2, v3, v4]);
                     let dst:usize = usize::from_be_bytes([0, 0, 0, 0, 0, 0, d1,d2]);
-                    map.insert((idx, val), dst);
+                    pc_vec.push(idx);
+                    jump_map.push((idx,val));
+                    jump_dst.push(dst);
+
                     i += 11;
                     while (match bytes[i..=i+10] {
                         [0x80, 0x63, v1, v2, v3, v4, 0x14, 0x61, d1, d2, 0x57] =>{
@@ -127,7 +132,9 @@ fn func_select_table_v1(bytes: &[u8], map : &mut HashMap<(usize, U256), usize>){
                                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
                                 0x00, 0x00, 0x00, 0x00, v1, v2, v3, v4]);
                             let dst1:usize = usize::from_be_bytes([0, 0, 0, 0, 0, 0, d1,d2]);
-                            map.insert((idx, val1), dst1);
+                            pc_vec.push(idx);
+                            jump_map.push((idx,val1));
+                            jump_dst.push(dst1);
                             i += 11;
                             true
                         }
@@ -140,12 +147,56 @@ fn func_select_table_v1(bytes: &[u8], map : &mut HashMap<(usize, U256), usize>){
         else{
             i += 1;
         }
-    }
-       
+    } 
+}
+
+//Vector version 1
+fn func_select_table_v1(bytes: &[u8], map : &mut Vec<(usize, U256)>, dst_vec : &mut Vec<usize>){
+    let mut i = 0;
+    while i < bytes.len() {
+        let op = *bytes.get(i).unwrap();
+        if (0x60..=0x7f).contains(&op) {
+            i += 1; 
+            i += op as usize - 0x5f;
+        }
+        else if op == 0x80 {
+            match  bytes[i..=i+10] {
+                [0x80, 0x63, v1, v2, v3, v4, 0x14, 0x61, d1, d2, 0x57] =>{
+                    let idx = i;
+                    let val:U256 = U256::from_be_bytes([ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+                        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+                        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+                        0x00, 0x00, 0x00, 0x00, v1, v2, v3, v4]);
+                    let dst:usize = usize::from_be_bytes([0, 0, 0, 0, 0, 0, d1,d2]);
+                    map.push((idx, val));
+                    dst_vec.push(dst);
+                    i += 11;
+                    while (match bytes[i..=i+10] {
+                        [0x80, 0x63, v1, v2, v3, v4, 0x14, 0x61, d1, d2, 0x57] =>{
+                            let val1:U256 = U256::from_be_bytes([ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+                                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+                                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+                                0x00, 0x00, 0x00, 0x00, v1, v2, v3, v4]);
+                            let dst1:usize = usize::from_be_bytes([0, 0, 0, 0, 0, 0, d1,d2]);
+                            map.push((idx, val1));
+                            dst_vec.push(dst1);
+                            i += 11;
+                            true
+                        }
+                        _ =>{false}                  
+                    }){}
+                }
+                _ =>{i += 1;}                  
+            }
+        }
+        else{
+            i += 1;
+        }
+    } 
 }
 
 
-
+//HashMap version
 fn func_select_table(bytes: &[u8], map : &mut HashMap<usize, HashMap<U256, usize>>){
     let mut i = 0;
     while i < bytes.len() {
@@ -188,10 +239,103 @@ fn func_select_table(bytes: &[u8], map : &mut HashMap<usize, HashMap<U256, usize
         else{
             i += 1;
         }
-    }
-       
+    }   
 }
 
+// modify the original bytecode
+fn mut_panic_code(bytes: &[u8], new_bytes: &mut [u8]){
+    // Pattern1   Pattern2 (working)
+    // JUMPI/Other op       JUMPDEST
+    // ...
+    // Revert      Revert
+    let mut i = 0;
+    let mut jump_point = Default::default(); 
+    while i < bytes.len() {
+        let op = *bytes.get(i).unwrap();
+        //println!("op code: {:x}", op);
+        // skipping push
+        i += 1;
+        if (0x60..=0x7f).contains(&op) {
+            i += op as usize - 0x5f;
+        }
+        else if op == 0x5b {
+            //println!("1 jump point moved to {}", i);
+            jump_point = i-1;
+        }
+        else if(op == 0x57 || op == 0x56){
+            //println!("2 jump point moved to {}", i);
+            jump_point = i;
+        }
+        else if(op == 0 || op == 0xfe || op == 0xf3){
+            //println!("3 jump point moved to {}", i);
+            jump_point = i;
+        }
+        //modify the 
+        else if op == 0xfd{
+            //println!("At jump point {} found fd {}!\n", jump_point, i);
+            new_bytes[jump_point]= 0xfd;
+            jump_point = i + 1;
+        }
+    }
+}
+
+// vector version
+fn find_panic_code_v1(data: &[u8], map : &mut Vec<usize>){
+    // ------- work ---------------
+    // 0x41 can be substituted by other error codes
+    // Push1 0x41 Push1 0x4 MSTORE PUSH1 0x24 Push1 0x0 Revert
+    // 604160045260246000fd
+    // ------- work ---------------
+
+    // JUMPDEST PUSH32 (error message)
+    // Push1 0x0 
+    // MSTORE 
+    // Push1 0x41 
+    // Push1 0x4 
+    // MSTORE 
+    // PUSH1 0x24 
+    // Push1 0x0 
+    // Revert
+    // 600052604160045260246000fd
+
+    let mut indices: Vec<usize> = Vec::new();
+
+    let bypass_panic = vec![0x11, 0x12, 0x32, 0x41];
+
+    for (index, byte) in data.iter().enumerate() {
+        if *byte == 0xfd && index > 46 {
+            match  data[(index-12)..=index] {
+                [0x60, 0x00, 0x52, 0x60, panc, 0x60, 0x04, 0x52, 0x60, 0x24, 0x60, 0x00, 0xfd] => {
+                    //println!("pattern found!{}", index + 1);
+                    if bypass_panic.contains(&panc){
+                        let mut found = false;  
+                        let mut iter = index - 9;
+                        while (!found && iter > 0) {
+                            // JUMPDEST
+                            if(data[iter] == 0x5b){
+                                found = true;
+                                //println!("At idx {} found {}!\n", iter, index);
+                                map.push(index-12);
+                            }
+                            //JUMPI or JUMP
+                            else if(data[iter] == 0x57 || data[iter] == 0x56){
+                                //println!("quit early: {} {}", index, iter);
+                                map.push(index+1);
+                                found = true;
+                            }
+                            else{
+                                iter = iter - 1;
+                            }
+                        }                   
+                    }else{}
+                },
+                _ => {},
+            } 
+        }
+    } 
+}
+
+//Hashmap version
 fn find_panic_code(data: &[u8], map : &mut HashMap<usize, usize>){
     // ------- work ---------------
     // 0x41 can be substituted by other error codes
@@ -246,18 +390,16 @@ fn find_panic_code(data: &[u8], map : &mut HashMap<usize, usize>){
                 _ => {},
             } 
         }
-    }
-    
+    } 
 }
 
-
+// PUSH op code MAP
 fn build_push_map(bytes: &[u8], map : &mut HashMap<usize, usize>){
     let mut i = 0;
     while i < bytes.len() {
         let op = *bytes.get(i).unwrap();
         i += 1;
         // skipping push
-
         if (0x60..=0x7f).contains(&op) {
             let num_bytes = op as usize - 0x5f;
             map.insert(i + num_bytes -1, num_bytes);
@@ -267,8 +409,8 @@ fn build_push_map(bytes: &[u8], map : &mut HashMap<usize, usize>){
 }
 
 
-// TODO: FIX 
-fn find_pattern_indices(bytes: &[u8], map : &mut HashMap<usize, usize>){
+// Finding JUMPDEST - REVERT bb Hash Map version
+fn find_pattern_indices(bytes: &[u8], map : &mut HashMap<usize, usize>, skip_map: &mut Vec<usize>){
     // -------This did not work ---------------
     // Pattern1   Pattern2 (working)
     // JUMPI/Other op       JUMPDEST
@@ -296,22 +438,32 @@ fn find_pattern_indices(bytes: &[u8], map : &mut HashMap<usize, usize>){
     // }
     while i < bytes.len() {
         let op = *bytes.get(i).unwrap();
-        i += 1;
+        //println!("op code: {:x}", op);
         // skipping push
+        i += 1;
         if (0x60..=0x7f).contains(&op) {
             i += op as usize - 0x5f;
         }
-        else if op == 0x5b{
-            jump_point = i - 1;
+        else if op == 0x5b {
+            //println!("1 jump point moved to {}", i);
+            jump_point = i-1;
         }
-        else if(op == 0x57 || op == 0x56 || op != 0 || op != 0xfe || op != 0xfd || op != 0xf3){
+        else if(op == 0x57 || op == 0x56){
+            //println!("2 jump point moved to {}", i);
+            jump_point = i;
+        }
+        else if(op == 0 || op == 0xfe || op == 0xf3){
+            //println!("3 jump point moved to {}", i);
             jump_point = i;
         }
         else if op == 0xfd{
-            //println!("At idx {} found fd!\n", index);
+            //println!("At jump point {} found fd {}!\n", jump_point, i);
             map.insert(jump_point, i);
+            skip_map.push(jump_point);
+            jump_point = i + 1;
             }
         }
+        
 }
 
 impl Interpreter {
@@ -321,7 +473,16 @@ impl Interpreter {
             panic!("Contract is not execution ready {:?}", contract.bytecode);
         }
         let is_eof = contract.bytecode.is_eof();
+
+        // modify the bytecode to revert early
+        // let origin = contract.bytecode.original_byte_slice().clone();
+        // let mut new_vec: Vec<u8> = Vec::with_capacity(origin.len());
+        // new_vec.extend_from_slice(origin);
+        // mut_panic_code(origin, &mut new_vec);
+        // let bytecode = Bytes::copy_from_slice(&new_vec);
+
         let bytecode = contract.bytecode.bytecode().clone();
+
         Self {
             instruction_pointer: bytecode.as_ptr(),
             bytecode,
@@ -496,10 +657,8 @@ impl Interpreter {
     ) {
         self.instruction_result = InstructionResult::Continue;
         self.return_data_buffer.clone_from(call_outcome.output());
-
         let out_offset = call_outcome.memory_start();
         let out_len = call_outcome.memory_length();
-
         let target_len = min(out_len, self.return_data_buffer.len());
         match call_outcome.instruction_result() {
             return_ok!() => {
@@ -566,52 +725,32 @@ impl Interpreter {
         FN: Fn(&mut Interpreter, &mut H),
     {
         let pc = &self.program_counter();
-        let mut val:U256 = U256::from(0);
-        if self.stack.len() > 0 {
-            val = self.stack.peek(0).unwrap();
-        }
-        // Get current opcode.
         let opcode = unsafe { *self.instruction_pointer };
-
         // SAFETY: In analysis we are doing padding of bytecode so that we are sure that last
         // byte instruction is STOP so we are safe to just increment program_counter bcs on last instruction
         // it will do noop and just stop execution of this contract
         self.instruction_pointer = unsafe { self.instruction_pointer.offset(1) };
-
         // execute instruction.
         (instruction_table[opcode as usize])(self, host)
     }
 
     #[inline]
-    pub(crate) fn step_skip<FN, H: Host + ?Sized>(&mut self, instruction_table: &[FN; 256], host: &mut H, skip_map: &HashMap<usize, usize>, fs_map: &HashMap<(usize, U256), usize>)
+    pub(crate) fn step_skip<FN, H: Host + ?Sized>(&mut self, instruction_table: &[FN; 256], host: &mut H, skip_map: &mut Vec<usize>, selector_vec: &Vec<usize>, fs_vec: &Vec<(usize, U256)>, dst_map: &Vec<usize>)
     where
         FN: Fn(&mut Interpreter, &mut H),
     {
-        let start = Instant::now();
         let pc = &self.program_counter();
-        let mut val:U256 = U256::from(0);
-        if self.stack.len() > 0 {
-            val = self.stack.peek(0).unwrap();
-        }else{
-            // Get current opcode.
-            let opcode = unsafe { *self.instruction_pointer };
+        let opcode = unsafe { *self.instruction_pointer };
 
-            // SAFETY: In analysis we are doing padding of bytecode so that we are sure that last
-            // byte instruction is STOP so we are safe to just increment program_counter bcs on last instruction
-            // it will do noop and just stop execution of this contract
-            self.instruction_pointer = unsafe { self.instruction_pointer.offset(1) };
-
-            // execute instruction.
-            (instruction_table[opcode as usize])(self, host)
-        }
-        if skip_map.contains_key(pc){
-            let value = skip_map.get(&self.program_counter());
+        // check if there is revert ahead, exit early
+        if skip_map.contains(pc){
+            //let value = skip_map.get(&self.program_counter());
             println!("Revert Ahead at pc{}, {}!", self.program_counter(), unsafe {*self.instruction_pointer});
             (instruction_table[0xfd as usize])(self, host)}
         
         // }else if (fs_map.contains_key(pc)){
 
-        // v0 
+        // v0 Hash Map version
         // if fs_map.contains_key(pc) {
         //     println!("Jump Ahead");
         //     let innermap = fs_map.get(pc).unwrap();
@@ -635,12 +774,42 @@ impl Interpreter {
         //         (instruction_table[opcode as usize])(self, host)
         //     }
         // }
-        else if let Some(dst) = fs_map.get(&(*pc, val)){ 
-            self.instruction_pointer = unsafe { self.bytecode.as_ptr().add(*dst) };
+        //function selector jump, peek the stack and jump directly to the dst pc
+        if selector_vec.contains(pc){
+            let val = self.stack.peek(0).unwrap();
+            if let Some(index) = fs_vec.iter().position(|&x| x == (*pc, val)){
+                let dst = dst_map[index];
+                self.instruction_pointer = unsafe { self.bytecode.as_ptr().add(dst)};
+            }
+            else{
+                // Get current opcode.
+                //let opcode = unsafe { *self.instruction_pointer };
+    
+                // SAFETY: In analysis we are doing padding of bytecode so that we are sure that last
+                // byte instruction is STOP so we are safe to just increment program_counter bcs on last instruction
+                // it will do noop and just stop execution of this contract
+                self.instruction_pointer = unsafe { self.instruction_pointer.offset(1) };
+    
+                // execute instruction.
+                (instruction_table[opcode as usize])(self, host)
+            }
+            //fs_map hash map
+            // match fs_map.get(&(*pc, val)){
+            //     Some(dst) => { self.instruction_pointer = unsafe { self.bytecode.as_ptr().add(*dst)};}
+            //     None => {// Get current opcode.
+            //         let opcode = unsafe { *self.instruction_pointer };
+            //         // SAFETY: In analysis we are doing padding of bytecode so that we are sure that last
+            //         // byte instruction is STOP so we are safe to just increment program_counter bcs on last instruction
+            //         // it will do noop and just stop execution of this contract
+            //         self.instruction_pointer = unsafe { self.instruction_pointer.offset(1) };
+            //         // execute instruction.
+            //         (instruction_table[opcode as usize])(self, host)
+            //     }
+            // }
         }
         else{
             // Get current opcode.
-            let opcode = unsafe { *self.instruction_pointer };
+            //let opcode = unsafe { *self.instruction_pointer };
 
             // SAFETY: In analysis we are doing padding of bytecode so that we are sure that last
             // byte instruction is STOP so we are safe to just increment program_counter bcs on last instruction
@@ -672,40 +841,30 @@ impl Interpreter {
 
         // Find bbs with revert as last instruction
         let bytecode_analysis = self.contract.bytecode.original_byte_slice().clone();
+        let mut skip_vec: Vec<usize> = Vec::new();
         let mut skip_map: HashMap<usize, usize> = HashMap::new();
-        let mut push_map: HashMap<usize, usize> = HashMap::new();
         //let mut func_selector_map: HashMap<usize, HashMap<U256, usize>> = HashMap::new();
-        let mut func_selector_map: HashMap<(usize,U256), usize> = HashMap::new();
-        
-        find_panic_code(bytecode_analysis, &mut skip_map);
+        //let mut func_selector_map: HashMap<(usize,U256), usize> = HashMap::new();
+        let mut func_selector_vec: Vec<usize> = Vec::new();
+        let mut func_selector_map: Vec<(usize,U256)> = Vec::new();
+        let mut func_selector_dst: Vec<usize> = Vec::new();
 
         //build_push_map(&bytecode_analysis, &mut push_map);
         //find_pattern_indices(&bytecode_analysis, &mut skip_map);
         
-        // let start = Instant::now();
-        func_select_table_v1(&bytecode_analysis, &mut func_selector_map);
-        //let elapsed = start.elapsed();   
-        // println!(
-        //     "Finished execution. Total CPU time: {:.6}s",
-        //     elapsed.as_secs_f64()
-        // ); 
+        // find_panic_code_v1(&bytecode_analysis, &mut skip_map);
 
-        // println!{"first bytecode"}
-        // for el in bytecode_analysis {
-        //      println!("{:02x}", el);
-        // }
+        //Find revert to skip 
+        find_pattern_indices(&bytecode_analysis, &mut skip_map, &mut skip_vec);
 
-        // for (key, value) in &func_selector_map {
-        //     for (k1, v1) in value{
-        //         println!("{} : ({:06x}: {:06x})", key, k1, v1);
+        //func_select_table_v1(&bytecode_analysis, &mut func_selector_map, &mut func_selector_dst);
+        // function selector 
+        func_select_table_v2(&bytecode_analysis, &mut func_selector_vec, &mut func_selector_map, &mut func_selector_dst);
 
-        //     }
-            
-        // }
         // main loop
         while self.instruction_result == InstructionResult::Continue {
-            //self.step(instruction_table, host)
-            self.step_skip(instruction_table, host, &skip_map, &func_selector_map);
+            self.step(instruction_table, host)
+            //self.step_skip(instruction_table, host, &mut skip_vec, &func_selector_vec, &func_selector_map, &func_selector_dst);
         }
 
         // Return next action if it is some.

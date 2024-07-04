@@ -151,6 +151,11 @@ path = "../../examples/generate_block_traces.rs"
 required-features = ["std", "serde-json", "ethersdb"]
 
 [[example]]
+name = "test"
+path = "../../examples/test.rs"
+required-features = ["std", "serde-json", "ethersdb"]
+
+[[example]]
 name = "db_by_ref"
 path = "../../examples/db_by_ref.rs"
 required-features = ["std", "serde-json"]
